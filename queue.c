@@ -40,3 +40,8 @@ void *queue_deq(queue q)
 		return temp;
 	}
 }
+
+void *peek(queue q)
+{
+  return q->head->element;
+}
