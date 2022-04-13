@@ -42,6 +42,7 @@ int send_packet(packet *m)
 	int ret;
 	ret = write(interfaces[m->interface], m->payload, m->len);
 	DIE(ret == -1, "write");
+	printf("Debug : %d %s %d\n", interfaces[m->interface], m->payload, m->len);
 	return ret;
 }
 

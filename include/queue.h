@@ -16,4 +16,6 @@ extern void *queue_deq(queue q);
 /* return a true value if and only if the queue is empty */
 extern int queue_empty(queue q);
 
+extern void *peek(queue q);
+
 #endif /* _QUEUE_H_ */
