@@ -24,54 +24,19 @@ int cmpfunc(const void *a, const void *b)
 	}
 }
 
-struct route_table_entry *get_best_route(uint32_t dest_ip)
-{
-	int l = 0;
-	int r = rtable_len - 1;
-
-	while (l <= r)
-	{
-		int m = l + (r - l) / 2;
-
-		// Check if I found the prefix
-		// printf("Debug : %d %d %d %d\n", m, rtable[m].mask & dest_ip, rtable[m].prefix, rtable_len);
-		if ((rtable[m].mask & dest_ip) == rtable[m].prefix)
-		{
-			// Search the maximum mask
-			int ok = 1;
-			while (((rtable[m].mask & dest_ip) == rtable[m].prefix) 
-					&& (m < (rtable_len - 1)))
-			{
-				ok = 0;
-				m++;
+struct route_table_entry *get_best_route(uint32_t dest_ip) {
+	route_table_entry *bc = NULL;
+	for (int i = 0; i < rtable_len; ++i) {
+		if ((rtable[i].mask & dest_ip) == rtable[i].prefix) {
+			if (bc == NULL) {
+				bc = &rtable[i];
 			}
-			if (ok == 0)
-			{
-				return &rtable[m - 1];
-			}
-			else
-			{
-				return &rtable[m];
-			}
-		}
-		else
-		{
-			// If the search prefix is ​​larger than the current one,
-			// ignore the left half
-			if ((rtable[m].mask & dest_ip) > rtable[m].prefix)
-			{
-				l = m + 1;
-			}
-			else
-			{
-				// Ignore the right half
-				r = m - 1;
-			}
+			else if(ntohl(bc->mask) < ntohl(rtable[i].mask)) {
+				bc = &rtable[i];
+			} 
 		}
 	}
-
-	// The ip isn't in the route table
-	return NULL;
+	return bc;
 }
 
 void traverse_packets(queue *waiting_packets, uint8_t mac[ETH_ALEN], arp_header *arp_head) {
@@ -135,8 +100,6 @@ void arp_request(route_table_entry route, packet m, queue *waiting_packets) {
 	// The ip source is the router's ip
 	uint32_t saddr = inet_addr(get_interface_ip(route.interface));
 	
-
-
 	// Construct the ethernet header with my mac as source and
 	// broadcast address as destination 
 	uint8_t dha[ETH_ALEN];
@@ -199,13 +162,27 @@ void arp_reply(packet* m, struct arp_header arp_head) {
 	send_packet(&packet);
 }
 
+void enqueue_packet(queue *q_packets, packet m,
+					struct route_table_entry *best_route)
+{
+	// Put the package in the queue and update the interface
+	m.interface = best_route->interface;
+
+	packet *copy_m = malloc(sizeof(m));
+	DIE(copy_m == NULL, "Can't alloc a packet.");
+	memcpy(copy_m, &m, sizeof(m));
+
+	queue_enq(*q_packets, copy_m);
+}
+
 int main(int argc, char *argv[])
 {
-	setvbuf(stdout, NULL, _IONBF, 0);
+	
 	packet m;
 	int rc, i;
 
 	init(argc - 2, argv + 2);
+	setvbuf(stdout, NULL, _IONBF, 0);
 
 	// Create the package queue
 	queue waiting_packets = queue_create();
@@ -218,7 +195,7 @@ int main(int argc, char *argv[])
 	DIE(arp_table == NULL, "Can't alloc the arp_table.");
 
 	qsort(rtable, rtable_len, sizeof(struct route_table_entry), cmpfunc);
-
+	int counter = 0;
 	while (1) {
 		rc = get_packet(&m);
 		DIE(rc < 0, "get_packet");
@@ -231,15 +208,13 @@ int main(int argc, char *argv[])
 		}
 		// struct icmphdr *icmp_head = parse_icmp(m.payload);
 		if (arp_head != NULL) {
-			printf("Check 1");
-			if (ntohs(arp_head->op) == ARPOP_REQUEST /*&& inet_addr(get_interface_ip(m.interface)) == arp_head->tpa*/) {
+			if (ntohs(arp_head->op) == ARPOP_REQUEST) {
 					arp_reply(&m, *arp_head);
 					continue;
 			}
 
 			if (ntohs(arp_head->op) == ARPOP_REPLY) {
-				printf("Ultimate : \n");
-				// Extact the ip and the mac receiveds
+				//Extact the ip and the mac receiveds
 				uint32_t daddr = arp_head->spa;
 				uint8_t mac[ETH_ALEN];
 				for (int i = 0; i < ETH_ALEN; i++)
@@ -281,7 +256,6 @@ int main(int argc, char *argv[])
 
 		if (ntohs(eth_head->ether_type) == ETHERTYPE_IP) {
 			
-			printf("Alex");
 			if ((inet_addr(get_interface_ip(m.interface))) == ip_head->daddr) {
 				continue;
 			}
@@ -295,7 +269,6 @@ int main(int argc, char *argv[])
 			}
 
 			uint32_t dest_addr = ip_head->daddr;
-			printf("Cosmin : %d\n", dest_addr);
 			route_table_entry *route = get_best_route(dest_addr);
 
 			if (route == NULL) {
@@ -314,20 +287,20 @@ int main(int argc, char *argv[])
 			}
 
 			if (cache_arp_entry != NULL) {
-			   	get_interface_mac(route, eth_head->ether_shost);
-				memcpy(eth_head->ether_dhost, 0, ETH_ALEN);
+			   	get_interface_mac(route->interface, eth_head->ether_shost);
 				memcpy(eth_head->ether_dhost, &cache_arp_entry->mac, sizeof(cache_arp_entry->mac));
 				m.interface = route->interface;
 				send_packet(&m);
 			}
 			else {
+
+				// I put the package in the queue and 
+				// update the interface
+				enqueue_packet(&waiting_packets, m, route);
 				arp_request(*route, m, &waiting_packets);
+				continue;
 			}
 
 		}
-
-
-
-
 	}
 }
