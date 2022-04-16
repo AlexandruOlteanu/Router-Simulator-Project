@@ -5,12 +5,30 @@
 typedef struct route_table_entry route_table_entry;
 typedef struct arp_entry arp_entry;
 typedef struct arp_header arp_header;
+typedef struct ether_header ether_header;
+typedef struct iphdr iphdr;
+#define MAX_RTABLE_LENGTH 100000
+#define MAX_ARPTABLE_LENGTH 100
 
-route_table_entry *rtable;
-uint32_t rtable_len = 0;
+route_table_entry *route_table = NULL;
+uint32_t route_table_length = 0;
 
-arp_entry *arp_table;
-uint32_t arp_table_len = 0;
+arp_entry *arp_table = NULL;
+uint32_t arp_table_length = 0;
+
+ether_header* init_ether_header(packet *pack) {
+	return (ether_header *)pack->payload;
+}
+
+iphdr *init_ip_header(packet *pack) {
+	return (iphdr *) (pack->payload + sizeof(ether_header));
+}
+
+arp_header *init_arp_header(packet *pack) {
+	return (arp_header *) (pack->payload + sizeof(ether_header));
+}
+
+
 
 int cmpfunc(const void *a, const void *b)
 {
@@ -26,13 +44,13 @@ int cmpfunc(const void *a, const void *b)
 
 struct route_table_entry *get_best_route(uint32_t dest_ip) {
 	route_table_entry *bc = NULL;
-	for (int i = 0; i < rtable_len; ++i) {
-		if ((rtable[i].mask & dest_ip) == rtable[i].prefix) {
+	for (int i = 0; i < route_table_length; ++i) {
+		if ((route_table[i].mask & dest_ip) == route_table[i].prefix) {
 			if (bc == NULL) {
-				bc = &rtable[i];
+				bc = &route_table[i];
 			}
-			else if(ntohl(bc->mask) < ntohl(rtable[i].mask)) {
-				bc = &rtable[i];
+			else if(ntohl(bc->mask) < ntohl(route_table[i].mask)) {
+				bc = &route_table[i];
 			} 
 		}
 	}
@@ -177,49 +195,52 @@ void enqueue_packet(queue *q_packets, packet m,
 
 int main(int argc, char *argv[])
 {
-	
-	packet m;
-	int rc, i;
+	setvbuf(stdout, NULL, _IONBF, 0);
+	packet pack;
+	int rc;
 
 	init(argc - 2, argv + 2);
-	setvbuf(stdout, NULL, _IONBF, 0);
 
 	// Create the package queue
 	queue waiting_packets = queue_create();
 
 	// Parse the route table
-	rtable = (struct route_table_entry *)malloc(100000 * sizeof(struct route_table_entry));
-	rtable_len = read_rtable(argv[1], rtable);
+	route_table = (struct route_table_entry *)malloc(MAX_RTABLE_LENGTH * sizeof(struct route_table_entry));
+	DIE(route_table == NULL, "Error : route_table was not allocated");
+	route_table_length = read_rtable(argv[1], route_table);
 
-	arp_table = malloc(1000 * sizeof(struct arp_entry));
-	DIE(arp_table == NULL, "Can't alloc the arp_table.");
+	arp_table = malloc(MAX_ARPTABLE_LENGTH * sizeof(struct arp_entry));
+	DIE(arp_table == NULL, "Error : arp_table was not allocated");
 
-	qsort(rtable, rtable_len, sizeof(struct route_table_entry), cmpfunc);
-	int counter = 0;
+	qsort(route_table, route_table_length, sizeof(struct route_table_entry), cmpfunc);
+
 	while (1) {
-		rc = get_packet(&m);
-		DIE(rc < 0, "get_packet");
+		rc = get_packet(&pack);
+		DIE(rc < 0, "Error : Getting packet");
 
-		struct ether_header *eth_head = (struct ether_header*)m.payload;
-        struct iphdr *ip_head = (struct iphdr* )(m.payload + sizeof(struct ether_header));
-        struct arp_header *arp_head = NULL;
-		if (ntohs(eth_head->ether_type) == ETHERTYPE_ARP) {
-			arp_head = (struct arp_header *)(m.payload + sizeof(struct ether_header));
+		ether_header *ether_h = NULL;
+        iphdr *ip_h = NULL;
+        arp_header *arp_h = NULL;
+		ether_h = init_ether_header(&pack);
+		if (ntohs(ether_h->ether_type) == ETHERTYPE_IP) {
+			ip_h = init_ip_header(&pack);
 		}
-		// struct icmphdr *icmp_head = parse_icmp(m.payload);
-		if (arp_head != NULL) {
-			if (ntohs(arp_head->op) == ARPOP_REQUEST) {
-					arp_reply(&m, *arp_head);
+		if (ntohs(ether_h->ether_type) == ETHERTYPE_ARP) {
+			arp_h = init_arp_header(&pack);
+		}
+		if (arp_h != NULL) {
+			if (ntohs(arp_h->op) == ARPOP_REQUEST) {
+					arp_reply(&pack, *arp_h);
 					continue;
 			}
 
-			if (ntohs(arp_head->op) == ARPOP_REPLY) {
+			if (ntohs(arp_h->op) == ARPOP_REPLY) {
 				//Extact the ip and the mac receiveds
-				uint32_t daddr = arp_head->spa;
+				uint32_t daddr = arp_h->spa;
 				uint8_t mac[ETH_ALEN];
 				for (int i = 0; i < ETH_ALEN; i++)
 				{
-					mac[i] = arp_head->sha[i];
+					mac[i] = arp_h->sha[i];
 				}
 
 				// Construct a new entry in the arp table
@@ -232,72 +253,72 @@ int main(int argc, char *argv[])
 				// Update the table
 				bool found = 0;
 				// Add on the last position
-				for (i = 0; i < arp_table_len; i++) {
+				for (int i = 0; i < arp_table_length; i++) {
 					// Already exists
 					if (new_cache_entry->ip == arp_table[i].ip && !strcmp(new_cache_entry->mac, arp_table[i].mac)) {
 						found = 1;
-						i = arp_table_len;
+						i = arp_table_length;
 					}
 				}
 
 				// If isn't in the arp table
 				// add a new entry
 				if (!found) {
-						arp_table[arp_table_len] = *new_cache_entry;
-						arp_table_len++;
+						arp_table[arp_table_length] = *new_cache_entry;
+						arp_table_length++;
 				}
 
 				// Dequeue the packet
-				traverse_packets(&waiting_packets, mac, arp_head);
+				traverse_packets(&waiting_packets, mac, arp_h);
 
 				continue;
 			}
 		}
 
-		if (ntohs(eth_head->ether_type) == ETHERTYPE_IP) {
+		if (ip_h != NULL) {
 			
-			if ((inet_addr(get_interface_ip(m.interface))) == ip_head->daddr) {
+			if ((inet_addr(get_interface_ip(pack.interface))) == ip_h->daddr) {
 				continue;
 			}
 
-			if (ip_checksum(ip_head, sizeof(struct iphdr)) != 0) {
+			if (ip_checksum(ip_h, sizeof(struct iphdr)) != 0) {
 				continue;
 			}
 
-			if (ip_head->ttl <= 1) {
+			if (ip_h->ttl <= 1) {
 				continue;
 			}
 
-			uint32_t dest_addr = ip_head->daddr;
+			uint32_t dest_addr = ip_h->daddr;
 			route_table_entry *route = get_best_route(dest_addr);
 
 			if (route == NULL) {
 				continue;
 			}
 
-			--ip_head->ttl;
-			ip_head->check = 0;
-			ip_head->check = ip_checksum(ip_head, sizeof(struct iphdr));
+			--ip_h->ttl;
+			ip_h->check = 0;
+			ip_h->check = ip_checksum(ip_h, sizeof(struct iphdr));
 
 			arp_entry *cache_arp_entry = NULL;
-			for (int i = 0; i < arp_table_len; ++i) {
-				if (arp_table[i].ip == ip_head->daddr) {
+			for (int i = 0; i < arp_table_length; ++i) {
+				if (arp_table[i].ip == ip_h->daddr) {
 					cache_arp_entry = &arp_table[i];
 				}
 			}
 
 			if (cache_arp_entry != NULL) {
-			   	get_interface_mac(route->interface, eth_head->ether_shost);
-				memcpy(eth_head->ether_dhost, &cache_arp_entry->mac, sizeof(cache_arp_entry->mac));
-				m.interface = route->interface;
-				send_packet(&m);
+			   	get_interface_mac(route->interface, ether_h->ether_shost);
+				memcpy(ether_h->ether_dhost, &cache_arp_entry->mac, sizeof(cache_arp_entry->mac));
+				pack.interface = route->interface;
+				send_packet(&pack);
 			}
 			else {
 
 				// I put the package in the queue and 
 				// update the interface
-				enqueue_packet(&waiting_packets, m, route);
-				arp_request(*route, m, &waiting_packets);
+				enqueue_packet(&waiting_packets, pack, route);
+				arp_request(*route, pack, &waiting_packets);
 				continue;
 			}
 
