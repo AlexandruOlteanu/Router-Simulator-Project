@@ -7,14 +7,29 @@ typedef struct arp_entry arp_entry;
 typedef struct arp_header arp_header;
 typedef struct ether_header ether_header;
 typedef struct iphdr iphdr;
+typedef struct ethhdr ethhdr;
 #define MAX_RTABLE_LENGTH 100000
 #define MAX_ARPTABLE_LENGTH 100
+#define IPv4_ALEN 4
 
 route_table_entry *route_table = NULL;
 uint32_t route_table_length = 0;
 
 arp_entry *arp_table = NULL;
 uint32_t arp_table_length = 0;
+
+void init_route_table(char *file) {
+	route_table = (struct route_table_entry *)malloc(MAX_RTABLE_LENGTH * sizeof(struct route_table_entry));
+	DIE(route_table == NULL, "Error : route_table was not allocated");
+	route_table_length = read_rtable(file, route_table);
+	return;
+}
+
+void init_arp_table() {
+	arp_table = malloc(MAX_ARPTABLE_LENGTH * sizeof(struct arp_entry));
+	DIE(arp_table == NULL, "Error : arp_table was not allocated");
+	return;
+}
 
 ether_header* init_ether_header(packet *pack) {
 	return (ether_header *)pack->payload;
@@ -102,44 +117,34 @@ void traverse_packets(queue *waiting_packets, uint8_t mac[ETH_ALEN], arp_header 
 }
 
 void arp_request(route_table_entry route, packet m, queue *waiting_packets) {
-	uint32_t daddr = route.next_hop;
-
-	// The ip source is the router's ip
-	uint32_t saddr = inet_addr(get_interface_ip(route.interface));
 	
 	// Construct the ethernet header with my mac as source and
 	// broadcast address as destination 
-	uint8_t dha[ETH_ALEN];
-	memset(dha, 0xFF, ETH_ALEN);
 
-	struct ether_header *eth_hdr = malloc(sizeof(struct ether_header));
-	DIE(eth_hdr == NULL, "Can't alloc an ether_header.");
-	uint8_t mac[ETH_ALEN];
-	get_interface_mac(route.interface, mac);
-	memcpy(eth_hdr->ether_dhost, dha, ETH_ALEN);
-	memcpy(eth_hdr->ether_shost, mac, ETH_ALEN);
-	eth_hdr->ether_type = htons(ETHERTYPE_ARP);
+	struct ether_header *ether_h = malloc(sizeof(struct ether_header));
+	DIE(ether_h == NULL, "Error : ether_h was not allocated");
+	uint8_t mac_addr[ETH_ALEN];
+	get_interface_mac(route.interface, mac_addr);
+	memcpy(ether_h->ether_shost, mac_addr, ETH_ALEN);
+	hwaddr_aton("FF:FF:FF:FF:FF", ether_h->ether_dhost);
+	ether_h->ether_type = htons(ETHERTYPE_ARP);
 
-	uint16_t arp_op = htons(ARPOP_REQUEST);
-
-	// Send an ARP_REQUEST
-	// send_arp(daddr, saddr, eth_hdr, interface, arp_op);
 	struct arp_header arp_hdr;
 	packet packet;
 
 	arp_hdr.htype = htons(ARPHRD_ETHER);
-	arp_hdr.ptype = htons(2048);
-	arp_hdr.op = arp_op;
-	arp_hdr.hlen = 6;
-	arp_hdr.plen = 4;
-	memcpy(arp_hdr.sha, eth_hdr->ether_shost, ETH_ALEN);
-	memcpy(arp_hdr.tha, eth_hdr->ether_dhost, ETH_ALEN);
-	arp_hdr.spa = saddr;
-	arp_hdr.tpa = daddr;
-	memset(packet.payload, 0, sizeof(packet.payload));
-	memcpy(packet.payload, eth_hdr, sizeof(struct ethhdr));
-	memcpy(packet.payload + sizeof(struct ethhdr), &arp_hdr, sizeof(struct arp_header));
-	packet.len = sizeof(struct arp_header) + sizeof(struct ethhdr);
+	arp_hdr.ptype = htons(ETHERTYPE_IP);
+	arp_hdr.op = htons(ARPOP_REQUEST);
+	arp_hdr.hlen = ETH_ALEN;
+	arp_hdr.plen = IPv4_ALEN;
+	memcpy(arp_hdr.sha, ether_h->ether_shost, ETH_ALEN);
+	memcpy(arp_hdr.tha, ether_h->ether_dhost, ETH_ALEN);
+	arp_hdr.spa = inet_addr(get_interface_ip(route.interface));
+	arp_hdr.tpa = route.next_hop;
+	memset(packet.payload, NULL, sizeof(packet.payload));
+	memcpy(packet.payload, ether_h, sizeof(ethhdr));
+	memcpy(packet.payload + sizeof(ethhdr), &arp_hdr, sizeof(arp_header));
+	packet.len = sizeof(arp_header) + sizeof(ethhdr);
 	packet.interface = route.interface;
 	send_packet(&packet);
 }
@@ -177,18 +182,15 @@ int main(int argc, char *argv[])
 
 	init(argc - 2, argv + 2);
 
-	// Create the package queue
-	queue waiting_packets = queue_create();
-
 	// Parse the route table
-	route_table = (struct route_table_entry *)malloc(MAX_RTABLE_LENGTH * sizeof(struct route_table_entry));
-	DIE(route_table == NULL, "Error : route_table was not allocated");
-	route_table_length = read_rtable(argv[1], route_table);
-
-	arp_table = malloc(MAX_ARPTABLE_LENGTH * sizeof(struct arp_entry));
-	DIE(arp_table == NULL, "Error : arp_table was not allocated");
+	init_route_table(argv[1]);
 
 	qsort(route_table, route_table_length, sizeof(struct route_table_entry), cmpfunc);
+
+	init_arp_table();
+
+	// Create the package queue
+	queue waiting_packets = queue_create();
 
 	while (1) {
 		rc = get_packet(&pack);
@@ -234,16 +236,16 @@ int main(int argc, char *argv[])
 			ip_h->check = 0;
 			ip_h->check = ip_checksum(ip_h, sizeof(struct iphdr));
 
-			arp_entry *cache_arp_entry = NULL;
+			arp_entry *cache_arp = NULL;
 			for (int i = 0; i < arp_table_length; ++i) {
 				if (arp_table[i].ip == ip_h->daddr) {
-					cache_arp_entry = &arp_table[i];
+					cache_arp = &arp_table[i];
+					i = arp_table_length;
 				}
 			}
 
-			if (cache_arp_entry != NULL) {
-			   	get_interface_mac(fast_route->interface, ether_h->ether_shost);
-				memcpy(ether_h->ether_dhost, &cache_arp_entry->mac, sizeof(cache_arp_entry->mac));
+			if (cache_arp != NULL) {
+				memcpy(ether_h->ether_dhost, &cache_arp->mac, ETH_ALEN);
 				send_packet(&pack);
 			}
 			else {
