@@ -42,18 +42,6 @@ arp_header *init_arp_header(packet *pack) {
 	return (arp_header *) (pack->payload + sizeof(ether_header));
 }
 
-int cmpfunc(const void *a, const void *b)
-{
-	if ((*(struct route_table_entry *)a).prefix != (*(struct route_table_entry *)b).prefix)
-	{
-		return ((*(struct route_table_entry *)a).prefix - (*(struct route_table_entry *)b).prefix);
-	}
-	else
-	{
-		return ((*(struct route_table_entry *)a).mask - (*(struct route_table_entry *)b).mask);
-	}
-}
-
 struct route_table_entry *fastest_route(uint32_t dest_ip) {
 	route_table_entry *bc = NULL;
 	for (int i = 0; i < route_table_length; ++i) {
@@ -72,7 +60,6 @@ void traverse_packets(queue *waiting_packets, arp_header *arp_h) {
 
 	queue *after_removals = queue_create();
 	while (!queue_empty(*waiting_packets)) {
-		// First packet from queue
 		packet *pack = (packet *) queue_deq(*waiting_packets);
 		ether_header *ether_h = NULL;
 		iphdr *ip_h = NULL;
@@ -81,18 +68,12 @@ void traverse_packets(queue *waiting_packets, arp_header *arp_h) {
 		uint32_t dest_addr = ip_h->daddr;
 		route_table_entry *fast_route = fastest_route(dest_addr);
 
-		// If it is not the package to be sent to the received mac
-		// I don't take it out of the queue
 		if (fast_route->next_hop != arp_h->spa) {
 			queue_enq(*after_removals, pack);
 		} 
 		else {
-			// Complete the destination mac address for the packet from
-			// the queue
-			// Complete the destination mac
 			memcpy(ether_h->ether_dhost, arp_h->sha, sizeof(arp_h->sha));
 			memcpy(ether_h->ether_shost, arp_h->tha, sizeof(arp_h->tha));
-			// Send packet
 			pack->interface = fast_route->interface;
 			send_packet(pack);
 		}
@@ -116,9 +97,6 @@ iphdr fast_checksum_update(iphdr *ip_h) {
 
 void arp_request(route_table_entry route, packet m, queue *waiting_packets) {
 	
-	// Construct the ethernet header with my mac as source and
-	// broadcast address as destination 
-
 	struct ether_header *ether_h = malloc(sizeof(struct ether_header));
 	DIE(ether_h == NULL, "Error : ether_h was not allocated");
 	uint8_t mac_addr[ETH_ALEN];
@@ -181,14 +159,10 @@ int main(int argc, char *argv[])
 
 	init(argc - 2, argv + 2);
 
-	// Parse the route table
 	init_route_table(argv[1]);
-
-	qsort(route_table, route_table_length, sizeof(struct route_table_entry), cmpfunc);
 
 	init_arp_table();
 
-	// Create the package queue
 	queue waiting_packets = queue_create();
 
 	while (1) {
@@ -246,9 +220,6 @@ int main(int argc, char *argv[])
 				send_packet(&pack);
 			}
 			else {
-
-				// I put the package in the queue and 
-				// update the interface
 				packet new_pack;
 				memcpy(&new_pack, &pack, sizeof(pack));
 				queue_enq(waiting_packets, &new_pack);
@@ -264,19 +235,14 @@ int main(int argc, char *argv[])
 			}
 
 			if (ntohs(arp_h->op) == ARPOP_REPLY) {
-				//Extact the ip and the mac receiveds
-				// Construct a new entry in the arp table
 				struct arp_entry *new_arp = malloc(sizeof(struct arp_entry));
 				DIE(new_arp == NULL, "Can't alloc a new_entry in arp_table.");
 
 				memcpy(&new_arp->ip, &arp_h->spa, sizeof(arp_h->spa));
 				memcpy(&new_arp->mac, &arp_h->sha, sizeof(arp_h->sha));
-
+				traverse_packets(&waiting_packets, arp_h);
 				arp_table[arp_table_length] = *new_arp;
 				arp_table_length++;
-
-				// Dequeue the packet
-				traverse_packets(&waiting_packets, arp_h);
 
 				continue;
 			}
