@@ -102,14 +102,16 @@ void traverse_packets(queue *waiting_packets, arp_header *arp_h) {
     }
 }
 
-void fast_checksum_update(iphdr *ip_h) {
+iphdr fast_checksum_update(iphdr *ip_h) {
 
 	--ip_h->ttl;
+	uint32_t cast_32_bit = (1LL << 32) - 1;
 	uint32_t last_sum = ip_h->check;
-	uint32_t not_last_sum = ~last_sum;
-	uint32_t m_16_before = ip_h->ttl + 1;
-	uint32_t m_16_after = ip_h->ttl;
-	ip_h->check = ~(not_last_sum + ~m_16_before + m_16_after) - 1;
+	uint32_t not_last_sum = (~last_sum + 1);
+	uint32_t m_32_before = ((ip_h->ttl + 1) & cast_32_bit);
+	uint32_t m_32_after = (ip_h->ttl & cast_32_bit);
+	m_32_before = (~m_32_before + 1);
+	ip_h->check = (uint16_t *)(~(not_last_sum + m_32_before + m_32_after) + 1);
 }
 
 void arp_request(route_table_entry route, packet m, queue *waiting_packets) {
@@ -229,10 +231,7 @@ int main(int argc, char *argv[])
 			}
 			pack.interface = fast_route->interface;
 
-			--ip_h->ttl;
-			ip_h->check = 0;
-			ip_h->check = ip_checksum(ip_h, sizeof(struct iphdr));
-			// fast_checksum_update(ip_h);
+			fast_checksum_update(ip_h);
 
 			arp_entry *cache_arp = NULL;
 			for (int i = 0; i < arp_table_length; ++i) {
