@@ -1,6 +1,5 @@
 #include "queue.h"
 #include "skel.h"
-#include <stdbool.h>
 
 typedef struct route_table_entry route_table_entry;
 typedef struct arp_entry arp_entry;
@@ -26,7 +25,7 @@ void init_route_table(char *file) {
 }
 
 void init_arp_table() {
-	arp_table = malloc(MAX_ARPTABLE_LENGTH * sizeof(struct arp_entry));
+	arp_table = (arp_entry *)malloc(MAX_ARPTABLE_LENGTH * sizeof(arp_entry));
 	DIE(arp_table == NULL, "Error : arp_table was not allocated");
 	return;
 }
@@ -42,8 +41,6 @@ iphdr *init_ip_header(packet *pack) {
 arp_header *init_arp_header(packet *pack) {
 	return (arp_header *) (pack->payload + sizeof(ether_header));
 }
-
-
 
 int cmpfunc(const void *a, const void *b)
 {
@@ -71,49 +68,48 @@ struct route_table_entry *fastest_route(uint32_t dest_ip) {
 	}
 	return bc;
 }
-
 void traverse_packets(queue *waiting_packets, arp_header *arp_h) {
 
+	queue *after_removals = queue_create();
 	while (!queue_empty(*waiting_packets)) {
 		// First packet from queue
-		packet *to_send = (packet *)peek(*waiting_packets);
+		packet *pack = (packet *) queue_deq(*waiting_packets);
+		ether_header *ether_h = NULL;
+		iphdr *ip_h = NULL;
+		ether_h = init_ether_header(pack);
+		ip_h = init_ip_header(pack);
+		uint32_t dest_addr = ip_h->daddr;
+		route_table_entry *fast_route = fastest_route(dest_addr);
 
-		struct iphdr *ip_hdr_q_packet = (struct iphdr *)((*to_send).payload 
-										+ sizeof(struct ether_header));
-		struct ether_header *eth_hdr;
-		eth_hdr = (struct ether_header *)(*to_send).payload;
-
-		struct route_table_entry *best = fastest_route(ip_hdr_q_packet->daddr);
-
-		
 		// If it is not the package to be sent to the received mac
 		// I don't take it out of the queue
-		if (best->next_hop != arp_h->spa)
-		{
-			break;
+		if (fast_route->next_hop != arp_h->spa) {
+			queue_enq(*after_removals, pack);
+		} 
+		else {
+			// Complete the destination mac address for the packet from
+			// the queue
+			// Complete the destination mac
+			memcpy(ether_h->ether_dhost, arp_h->sha, sizeof(arp_h->sha));
+			memcpy(ether_h->ether_shost, arp_h->tha, sizeof(arp_h->tha));
+			// Send packet
+			pack->interface = fast_route->interface;
+			send_packet(pack);
 		}
-		// It's the right package, taking it out of the queue
-		else
-		{
-			to_send = (packet *)queue_deq(*waiting_packets);
-		}
-
-		// Complete the destination mac address for the packet from
-		// the queue
-
-		// Complete the destination mac
-		for (int i = 0; i < ETH_ALEN; i++) {
-			eth_hdr->ether_dhost[i] = arp_h->sha[i];
-		}
-		for (int i = 0; i < ETH_ALEN; i++) {
-			// Update the source mac
-			eth_hdr->ether_shost[i] = arp_h->tha[i];
-		}
-
-		// Send packet
-		to_send->interface = best->interface;
-		send_packet(to_send);
 	}
+	while (!queue_empty(after_removals)) {
+        queue_enq(*waiting_packets, queue_deq(*after_removals));
+    }
+}
+
+void fast_checksum_update(iphdr *ip_h) {
+
+	--ip_h->ttl;
+	uint32_t last_sum = ip_h->check;
+	uint32_t not_last_sum = ~last_sum;
+	uint32_t m_16_before = ip_h->ttl + 1;
+	uint32_t m_16_after = ip_h->ttl;
+	ip_h->check = ~(not_last_sum + ~m_16_before + m_16_after) - 1;
 }
 
 void arp_request(route_table_entry route, packet m, queue *waiting_packets) {
@@ -236,6 +232,7 @@ int main(int argc, char *argv[])
 			--ip_h->ttl;
 			ip_h->check = 0;
 			ip_h->check = ip_checksum(ip_h, sizeof(struct iphdr));
+			// fast_checksum_update(ip_h);
 
 			arp_entry *cache_arp = NULL;
 			for (int i = 0; i < arp_table_length; ++i) {
@@ -269,7 +266,6 @@ int main(int argc, char *argv[])
 
 			if (ntohs(arp_h->op) == ARPOP_REPLY) {
 				//Extact the ip and the mac receiveds
-
 				// Construct a new entry in the arp table
 				struct arp_entry *new_arp = malloc(sizeof(struct arp_entry));
 				DIE(new_arp == NULL, "Can't alloc a new_entry in arp_table.");

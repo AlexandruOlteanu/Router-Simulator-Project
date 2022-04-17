@@ -11,7 +11,7 @@ struct queue
 
 queue queue_create(void)
 {
-	queue q = malloc(sizeof(struct queue));
+	queue q = (queue)malloc(sizeof(queue));
 	q->head = q->tail = NULL;
 	return q;
 }
@@ -41,7 +41,6 @@ void *queue_deq(queue q)
 	}
 }
 
-void *peek(queue q)
-{
-  return q->head->element;
+void *get_queue_top(queue q) {
+	return q->head->element;
 }
