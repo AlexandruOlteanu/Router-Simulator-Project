@@ -1,0 +1,45 @@
+<Copyright Alexandru Olteanu, alexandruolteanu2001@gmail.com>
+
+    Tema a fost realizata conform cu indicatiile din cerinta +
+research online despre protocolul ARP si cum face acesta request-uri
+si reply-uri. Task-urile rezolvate de mine la aceasta tema sunt urmatoarele:
+- Arp Request 
+- Arp Reply 
+- Forwarding
+- Bonus - actualizare rapida checksum
+    Rezolvarea este scrisa doar in fisierul router.c 
++ declararea functiei get_queue_top din queue.c si queue.h.
+Astfel, flow-ul rezolvarii (Proces care este detaliat in amanunt 
+cu ajutorul comentariilor din cod) este urmatorul:
+    1) Dorim sa facem ping manual unui numar de pachete de pe o interfata
+(host) pe alta. Pentru a realiza acest proces avem nevoie de router ca 
+intermediator. Astfel, acesta face legaturile necesare intre transmitator
+si destinatar.
+    2) Pachetul poate fi de tip IPv4 (Contine informatie si trebuie trimis)
+sau poate fi de tip ARP (pachet ce necesita request-uri de informatie sau 
+update-ul acestora)
+    3)In cazul unui pachet IPv4 trebuie sa verificam daca pachetul este sau 
+nu corupt, astfel:
+        - ne asiguram ca nu este un pachet destinat router-ului care nu reprezinta 
+        un host
+        - ne asiguram ca suma de control este corecta
+        - ne asiguram ca avem campul ttl inca valabil (ttl <= 1)
+        - calculam next hop-ul unde trebuie sa ajunga pachetul si in 
+        cazul in care acesta este null, pachetul nu stie directia si se arunca din nou
+        informatia
+    Daca pachetul este in regula, facem update-ul de ttl si suma de control cu ajutorul
+    functiei create prin formulele din articolul despre RFC 1624.
+    Apoi, verificam daca interfata unde trebuie trimis are deja adresa mac cunoscuta, 
+    astfel facem o cautare in tabela de Arp Cache. Daca apare deja, totul este perfect, 
+    putem trimite pachetul la acea adresa de mac. Daca nu, trebuie sa generam un request
+    arp pentru a intreba in legatura cu adresa mac a interfetei necesare si sa salvam 
+    pachetul intr-o coada de pachete ce asteapta un raspuns si nu pot fi inca trimise.
+    4) In cazul unui pachet arp, daca acesta este unul de request, suntem pe interfata
+    corespunzatoare si putem afla mac-ul interfetei curente, astfel vom trimite un pachet
+    de arp reply care va raspunde intrebarilor generate din IPv4. Daca pachetul este de
+    arp reply, am primit un raspuns si suntem gata sa trimitem pachetele corespunzatoare 
+    care sunt in asteptare, astfel ca vom parcurge lista de pachete si le vom trimite pe 
+    cele ce necesita adresa mac tocmai aflata. In plus, vom adauga rezultatul gasit la 
+    tabela de cache arp pentru o viitoare optimizare a procesului.
+    5) In acest mod am realizat trimiterea unor pachete IPv4 prin intermediul unui Router
+    folosind protocolul Arp.
